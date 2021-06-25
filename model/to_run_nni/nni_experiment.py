@@ -1,11 +1,17 @@
 import nni
 import logging
 from torch.optim import Adam, SGD
-from torch.nn.functional import relu, tanh
+from torch.nn.functional import relu, elu, tanh
 import argparse
 
-from to_run_nni import *
+from __init__ import *
 logger = logging.getLogger("NNI_logger")
+
+activations_by_name = {
+    "ReLU": relu,
+    "ELU": elu,
+    "tanh": tanh
+}
 
 
 def run_trial(params, v, p, sg_sz, d, subgraph, device=0):
@@ -14,13 +20,14 @@ def run_trial(params, v, p, sg_sz, d, subgraph, device=0):
     NOTE: we assume that the graphs on which the calculations are done have already been created.
     """
     features = params["input_vec"]
-    hidden_layers = [params["h1_dim"], params["h2_dim"], params["h3_dim"], params["h4_dim"]]
+    hidden_layers = [int(params["h1_dim"]), int(params["h2_dim"]), int(params["h3_dim"]), int(params["h4_dim"])]
     dropout = params["dropout"]
     reg_term = params["regularization"]
     lr = params["learning_rate"]
     optimizer = Adam if params["optimizer"] == "Adam" else SGD
-    activation = relu if params["activation"] == "ReLU" else tanh
+    activation = activations_by_name[params["activation"]]
     input_params = {
+'	"model": "PYGON",  # or "GAT"
         "hidden_layers": hidden_layers,
         "epochs": 1000,
         "dropout": dropout,
