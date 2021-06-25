@@ -2,6 +2,7 @@ import pickle
 from sklearn.preprocessing import StandardScaler
 import torch
 from __init__ import *
+from learning_params import LearningHyperParams
 from utils import *
 from graphs_and_features import GraphBuilder, FeatureCalculator
 import pygon_runner as pygon
@@ -63,44 +64,28 @@ class PYGONMain:
 
     def train(self, input_params=None, check='split'):
         if input_params is None:
-            _ = pygon.run_pygon(feature_matrices=self._feature_matrices, adj_matrices=self._adjacency_matrices,
-                                labels=self._labels, hidden_layers=[225, 175, 400, 150], epochs=1000, dropout=0.4,
-                                lr=0.005, l2_pen=0.0005, coeffs=[1., 0., 0.], unary="bce", iterations=2,
-                                dumping_name=self._key_name, early_stop=True, edge_normalization="correct",
-                                optimizer=torch.optim.Adam, activation=torch.relu,
-                                graph_params=self._params, is_nni=self._nni, device=self._device, check=check,
-                                purpose='checkout')
+            input_params = {
+                "model": "PYGON",
+                "edge_normalization": "correct"
+            }
+            update_params(input_params, self._params["subgraph_size"])
 
-        else:
-            _ = pygon.run_pygon(feature_matrices=self._feature_matrices, adj_matrices=self._adjacency_matrices,
-                                labels=self._labels, hidden_layers=input_params["hidden_layers"],
-                                epochs=input_params["epochs"], dropout=input_params["dropout"], lr=input_params["lr"],
-                                l2_pen=input_params["regularization"], coeffs=input_params["coeffs"],
-                                unary=input_params["unary"], iterations=2, dumping_name=self._key_name,
-                                edge_normalization=input_params["edge_normalization"],
-                                early_stop=input_params["early_stop"],
-                                optimizer=input_params["optimizer"], activation=input_params["activation"],
-                                graph_params=self._params, is_nni=self._nni, device=self._device, check=check,
-                                purpose='checkout')
+        learning_hyperparams = LearningHyperParams(input_params)
+        _ = pygon.run_pygon(feature_matrices=self._feature_matrices, adj_matrices=self._adjacency_matrices,
+                            labels=self._labels, learning_hyperparams=learning_hyperparams, iterations=2,
+                            dumping_name=self._key_name + ('_'.join(map(str, learning_hyperparams.hidden_layers)), ),
+                            graph_params=self._params, is_nni=self._nni, device=self._device, check=check,
+                            purpose='checkout')
         return
 
     def train_performance(self, input_params, check='split'):
+        learning_hyperparams = LearningHyperParams(input_params)
         aggregated_results = pygon.run_pygon(
             feature_matrices=self._feature_matrices,
             adj_matrices=self._adjacency_matrices,
             labels=self._labels,
-            hidden_layers=input_params["hidden_layers"],
-            epochs=input_params["epochs"],
-            dropout=input_params["dropout"],
-            lr=input_params["lr"],
-            l2_pen=input_params["regularization"],
-            coeffs=input_params["coeffs"],
-            unary=input_params["unary"],
+            learning_hyperparams=learning_hyperparams,
             iterations=2, dumping_name=self._key_name,
-            edge_normalization=input_params["edge_normalization"],
-            optimizer=input_params["optimizer"],
-            activation=input_params["activation"],
-            early_stop=input_params["early_stop"],
             graph_params=self._params,
             check=check,
             device=self._device,
@@ -121,6 +106,7 @@ if __name__ == "__main__":
     #                     the extra features based on the motifs ('additional_features')
 
     params = {
+        "model": "PYGON",
         "features": ['Motif_3'],
         "hidden_layers": [225, 175, 400, 150],
         "epochs": 1000,

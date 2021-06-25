@@ -70,4 +70,4 @@ class GraphConvolution(Module):
         return output + self.bias
 
     def __repr__(self):
-        return "<%s (%s -> %s)>" % (type(self).__name__, self.in_features, self.out_features,)
+        return f"{type(self)} ({self._in_features} -> {self._out_features})"

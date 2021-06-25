@@ -1,12 +1,12 @@
 import logging
-import time
+from datetime import datetime
 from itertools import product
 from functools import partial
 import torch
-import torch.optim as optim
 import nni
 from utils import *
 from pygon_model import PYGONModel
+from gat_model import GATModel
 from loggers import PrintLogger, multi_logger, FileLogger
 from sklearn.metrics import roc_auc_score
 
@@ -39,22 +39,30 @@ class ModelRunner:
     @staticmethod
     def _pairwise_loss(flat_x, flat_adj):
         return - torch.mean((1 - flat_adj) * torch.log(
-            torch.where(1 - flat_x <= 1e-8, torch.tensor([1e-8], dtype=torch.double, device=flat_x.device), 1 - flat_x)) +
-            flat_adj * torch.log(torch.where(flat_x <= 1e-8, torch.tensor([1e-8], dtype=torch.double, device=flat_x.device), flat_x)))
+            torch.where(1 - flat_x <= 1e-8, torch.tensor([1e-8], dtype=torch.double, device=flat_x.device),
+                        1 - flat_x)) +
+                            flat_adj * torch.log(
+            torch.where(flat_x <= 1e-8, torch.tensor([1e-8], dtype=torch.double, device=flat_x.device), flat_x)))
 
     def _binomial_reg(self, y_hat):
         return - torch.mean(y_hat * np.log(self._graph_params["subgraph_size"] / self._graph_params["vertices"]) +
-                            (1 - y_hat) * np.log(1 - self._graph_params["subgraph_size"] / self._graph_params["vertices"]))
+                            (1 - y_hat) * np.log(
+            1 - self._graph_params["subgraph_size"] / self._graph_params["vertices"]))
 
     @property
     def logger(self):
         return self._logger
 
     def _get_model(self):
-        model = PYGONModel(n_features=self._conf["training_mat"][0].shape[1],
-                           hidden_layers=self._conf["hidden_layers"],
-                           dropout=self._conf["dropout"], activations=self._conf["activations"],
-                           p=self._graph_params["probability"], normalization=self._conf["edge_normalization"])
+        if self._conf["model"] == "PYGON":
+            model = PYGONModel(n_features=self._conf["training_mat"][0].shape[1],
+                               hidden_layers=self._conf["hidden_layers"],
+                               dropout=self._conf["dropout"], activations=self._conf["activations"],
+                               p=self._graph_params["probability"], normalization=self._conf["edge_normalization"])
+        else:
+            model = GATModel(n_features=self._conf["training_mat"][0].shape[1],
+                             hidden_layers=self._conf["hidden_layers"],
+                             dropout=self._conf["dropout"], activations=self._conf["activations"])
         opt = self._conf["optimizer"](model.parameters(), lr=self._conf["lr"], weight_decay=self._conf["weight_decay"])
 
         training_mats, training_adjs, training_labels, eval_mats, eval_adjs, eval_labels, \
@@ -91,7 +99,8 @@ class ModelRunner:
         intermediate_results = {}
         for measure, what_set in product(["auc", "all_loss", "unary_loss", "pairwise_loss", "binom_reg"],
                                          zip(["train", "eval", "test"],
-                                             [intermediate_training_results, intermediate_eval_results, intermediate_test_results])):
+                                             [intermediate_training_results, intermediate_eval_results,
+                                              intermediate_test_results])):
             intermediate_results[f"{measure}_{what_set[0]}"] = what_set[1][measure]
 
         final_results = {
@@ -108,8 +117,10 @@ class ModelRunner:
         if self._is_nni or verbose != 0:
             for message, value in zip(
                     ['epochs done: {}', 'Final loss train: {:3.4f}', 'Final AUC train: {:3.4f}',
-                     'Final loss eval: {:3.4f}', 'Final AUC eval: {:3.4f}', 'Final loss test: {:3.4f}', 'Final AUC test: {:3.4f}'],
-                    ["epochs_done", "all_loss_train", "auc_train", "all_loss_eval", "auc_eval", "all_loss_test", "auc_test"]):
+                     'Final loss eval: {:3.4f}', 'Final AUC eval: {:3.4f}', 'Final loss test: {:3.4f}',
+                     'Final AUC test: {:3.4f}'],
+                    ["epochs_done", "all_loss_train", "auc_train", "all_loss_eval", "auc_eval", "all_loss_test",
+                     "auc_test"]):
                 self._logger.info(message.format(final_results[value]))
 
         return intermediate_results, final_results
@@ -118,14 +129,17 @@ class ModelRunner:
         epochs_done = 0.
         output = 0.
         training_labels = 0.
-        training_results = {"all_loss": [], "unary_loss": [], "pairwise_loss": [], "binom_reg": [], "auc": []}  # All results by epoch
+        training_results = {"all_loss": [], "unary_loss": [], "pairwise_loss": [], "binom_reg": [],
+                            "auc": []}  # All results by epoch
         eval_results = {"all_loss": [], "unary_loss": [], "pairwise_loss": [], "binom_reg": [], "auc": []}
         test_results = {"all_loss": [], "unary_loss": [], "pairwise_loss": [], "binom_reg": [], "auc": []}
         counter = 0  # For early stopping
         min_loss = None
         for epoch in range(epochs):
             epochs_done += 1
-            output, training_labels, auc_train, all_loss, unary_loss, pairwise_loss, binom_reg = self._train(epoch, model, verbose)
+            output, training_labels, auc_train, all_loss, unary_loss, pairwise_loss, binom_reg = self._train(epoch,
+                                                                                                             model,
+                                                                                                             verbose)
             for key, value in zip(["auc", "all_loss", "unary_loss", "pairwise_loss", "binom_reg"],
                                   [auc_train, all_loss, unary_loss, pairwise_loss, binom_reg]):
                 training_results[key].append(value)
@@ -141,10 +155,12 @@ class ModelRunner:
             if epoch >= 10 and self._early_stop:  # Check for early stopping during training.
                 if min_loss is None:
                     min_loss = min(eval_results["all_loss"])
-                    torch.save(model["model"].state_dict(), os.path.join(self._tmp_path, "tmp.pt"))  # Save the best state.
+                    torch.save(model["model"].state_dict(),
+                               os.path.join(self._tmp_path, "tmp.pt"))  # Save the best state.
                 elif eval_res["all_loss"] < min_loss:
                     min_loss = min(eval_results["all_loss"])
-                    torch.save(model["model"].state_dict(), os.path.join(self._tmp_path, "tmp.pt"))  # Save the best state
+                    torch.save(model["model"].state_dict(),
+                               os.path.join(self._tmp_path, "tmp.pt"))  # Save the best state
                     counter = 0
                 else:
                     counter += 1
@@ -165,20 +181,23 @@ class ModelRunner:
         np.random.shuffle(graphs_order)
         outputs = torch.zeros(graph_size * n_training_graphs, dtype=torch.double)
         output_xs = torch.zeros((graph_size ** 2) * n_training_graphs, dtype=torch.double)
-        training_adj_flattened = torch.tensor(np.hstack([model["training_adjs"][idx].flatten() for idx in graphs_order]))
+        training_adj_flattened = torch.tensor(
+            np.hstack([model["training_adjs"][idx].flatten() for idx in graphs_order]))
         for i, idx in enumerate(graphs_order):
             training_mat = torch.tensor(model["training_mats"][idx], device=self._device)
-            training_adj, labels = map(lambda x: torch.tensor(data=model[x][idx], dtype=torch.double, device=self._device),
-                                       ["training_adjs", "training_labels"])
+            training_adj = self._get_adj_matrix(model["training_adjs"][idx])
+            labels = torch.tensor(data=model["training_labels"][idx], dtype=torch.double, device=self._device)
             model_.train()
             optimizer.zero_grad()
             output = model_(training_mat, training_adj)
-            output_matrix_flat = (torch.mm(output, output.transpose(0, 1)) + 1/2).flatten()
+            output_matrix_flat = (torch.mm(output, output.transpose(0, 1)) + 1 / 2).flatten()
             output_xs[i * graph_size ** 2:(i + 1) * graph_size ** 2] = output_matrix_flat.cpu()
             outputs[i * graph_size:(i + 1) * graph_size] = output.view(output.shape[0]).cpu()
             self._build_weighted_loss(labels)
             loss_train = self._conf["loss_coeffs"][0] * self._criterion(output.view(output.shape[0]), labels) + \
-                self._conf["loss_coeffs"][1] * self._pairwise_loss(output_matrix_flat, training_adj.flatten()) + \
+                self._conf["loss_coeffs"][1] * self._pairwise_loss(
+                output_matrix_flat, torch.tensor(
+                    model["training_adjs"][idx], dtype=torch.double, device=self._device).flatten()) + \
                 self._conf["loss_coeffs"][2] * self._binomial_reg(output)
             loss_train.backward()
             optimizer.step()
@@ -195,7 +214,8 @@ class ModelRunner:
         if verbose == 2:
             # Evaluate validation set performance separately,
             # deactivates dropout during validation run.
-            self._logger.debug(f"Epoch: {epoch+1:04d} loss_train: {all_training_loss.data.item():.4f} auc_train: {auc_train:.4f}")
+            self._logger.debug(
+                f"Epoch: {epoch + 1:04d} loss_train: {all_training_loss.data.item():.4f} auc_train: {auc_train:.4f}")
         return outputs.tolist(), all_training_labels.tolist(), auc_train, all_training_loss.data.item(), \
             unary_loss.data.item(), pairwise_loss.data.item(), regularization.data.item()
 
@@ -210,11 +230,10 @@ class ModelRunner:
         adj_flattened = torch.tensor(np.hstack([model[f"{what_set}_adjs"][idx].flatten() for idx in graphs_order]))
         for i, idx in enumerate(graphs_order):
             mat = torch.tensor(model[f"{what_set}_mats"][idx], device=self._device)
-            adj, labels = map(lambda x: torch.tensor(data=model[x][idx], dtype=torch.double, device=self._device),
-                              [f"{what_set}_adjs", f"{what_set}_labels"])
+            adj = self._get_adj_matrix(model[f"{what_set}_adjs"][idx])
             model_.eval()
             output = model_(*[mat, adj])
-            output_matrix_flat = (torch.mm(output, output.transpose(0, 1)) + 1/2).flatten()
+            output_matrix_flat = (torch.mm(output, output.transpose(0, 1)) + 1 / 2).flatten()
             output_xs[i * graph_size ** 2:(i + 1) * graph_size ** 2] = output_matrix_flat.cpu()
             outputs[i * graph_size:(i + 1) * graph_size] = output.view(output.shape[0]).cpu()
         all_labels = torch.tensor(np.hstack([model[f"{what_set}_labels"][idx] for idx in graphs_order]),
@@ -234,6 +253,27 @@ class ModelRunner:
                   "output_labels": np.vstack((outputs.tolist(), all_labels.tolist()))}
         return result
 
+    def _get_adj_matrix(self, plain_matrix):
+        if self._conf["model"] == "PYGON":
+            return torch.tensor(plain_matrix, dtype=torch.double, device=self._device)
+
+        source_nodes_ids, target_nodes_ids = [], []
+        comp_source_nodes_ids, comp_target_nodes_ids = [], []
+
+        for src_node, trg_node in product(range(plain_matrix.shape[0]), range(plain_matrix.shape[1])):
+            if plain_matrix[src_node, trg_node] > 0:
+                source_nodes_ids.append(src_node)
+                target_nodes_ids.append(trg_node)
+            elif src_node != trg_node:
+                comp_source_nodes_ids.append(src_node)
+                comp_target_nodes_ids.append(trg_node)
+
+        edge_index = np.row_stack((source_nodes_ids, target_nodes_ids))
+        comp_edge_index = np.row_stack((comp_source_nodes_ids, comp_target_nodes_ids))
+
+        return (torch.tensor(edge_index, dtype=torch.long, device=self._device),
+                torch.tensor(comp_edge_index, dtype=torch.long, device=self._device))
+
     @staticmethod
     def auc(output, labels):
         preds = output.data.type_as(labels)
@@ -252,12 +292,13 @@ def execute_runner(runners, is_nni=False):
         aggr_final_results = {}
         for new_name, old_name in zip(
                 ["auc_train", "loss_train", "auc_eval", "loss_eval", "auc_test", "loss_test", "epochs_done"],
-                ["auc_train", "all_loss_train", "auc_eval", "all_loss_eval", "auc_test", "all_loss_test", "epochs_done"]):
+                ["auc_train", "all_loss_train", "auc_eval", "all_loss_eval", "auc_test", "all_loss_test",
+                 "epochs_done"]):
             aggr_final_results[new_name] = [d[old_name] for d in all_final_results]
         runners[-1].logger.info("\nAggregated final results:")
         for name, vals in aggr_final_results.items():
-            runners[-1].logger.info("*"*15 + f"mean {name}: {np.mean(vals):.4f}")
-            runners[-1].logger.info("*"*15 + f"std {name}: {np.std(vals):.4f}")
+            runners[-1].logger.info("*" * 15 + f"mean {name}: {np.mean(vals):.4f}")
+            runners[-1].logger.info("*" * 15 + f"std {name}: {np.std(vals):.4f}")
             runners[-1].logger.info("Finished")
 
     # If the NNI doesn't run, only the mean results dictionary will be built. No special plots.
@@ -272,7 +313,7 @@ def execute_runner(runners, is_nni=False):
         "final_auc_test": np.mean([d["auc_test"] for d in all_final_results]),
         "final_loss_test": np.mean([d["all_loss_test"] for d in all_final_results]),
         "average_epochs_done": np.mean([d["epochs_done"] for d in all_final_results])
-        }
+    }
     return all_results
 
 
@@ -320,20 +361,21 @@ def execute_runner_for_performance(runners):
 
 
 def build_model(training_data, training_adj, training_labels, eval_data, eval_adj, eval_labels,
-                test_data, test_adj, test_labels,
-                hidden_layers, activations, optimizer, epochs, dropout, lr, l2_pen, coeffs, unary,
-                class_weights, graph_params, dumping_name, edge_normalization="correct", early_stop=True, is_nni=False,
-                device=1):
-    if coeffs is None:
-        coeffs = [1., 0., 0.]
-    conf = {"hidden_layers": hidden_layers, "dropout": dropout, "lr": lr, "weight_decay": l2_pen,
-            "training_mat": training_data, "training_adj": training_adj, "training_labels": training_labels,
+                test_data, test_adj, test_labels, learning_hyperparams, class_weights,
+                graph_params, dumping_name, is_nni=False, device=1):
+    activations = [learning_hyperparams.activation] * (len(learning_hyperparams.hidden_layers) + 1)
+    conf = {"model": learning_hyperparams.model, "hidden_layers": learning_hyperparams.hidden_layers,
+            "dropout": learning_hyperparams.dropout, "lr": learning_hyperparams.learning_rate,
+            "weight_decay": learning_hyperparams.l2_regularization, "training_mat": training_data,
+            "training_adj": training_adj, "training_labels": training_labels,
             "eval_mat": eval_data, "eval_adj": eval_adj, "eval_labels": eval_labels,
             "test_mat": test_data, "test_adj": test_adj, "test_labels": test_labels,
-            "optimizer": optimizer, "epochs": epochs, "activations": activations,
-            "loss_coeffs": coeffs, "unary": unary, "edge_normalization": edge_normalization}
+            "optimizer": learning_hyperparams.optimizer, "epochs": learning_hyperparams.epochs,
+            "activations": activations, "loss_coeffs": learning_hyperparams.loss_coefficients,
+            "unary": learning_hyperparams.unary_loss_type,
+            "edge_normalization": learning_hyperparams.edge_normalization}
 
-    products_path = os.path.join(os.getcwd(), "logs", *dumping_name, time.strftime("%Y%m%d_%H%M%S"))
+    products_path = os.path.join(os.getcwd(), "logs", *dumping_name, datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
     check_make_dir(products_path)
 
     logger = multi_logger([
@@ -341,15 +383,13 @@ def build_model(training_data, training_adj, training_labels, eval_data, eval_ad
         FileLogger("results_" + dumping_name[1], path=products_path, level=logging.INFO)], name=None)
 
     runner = ModelRunner(conf, logger=logger, weights=class_weights, graph_params=graph_params,
-                         early_stop=early_stop, is_nni=is_nni, tmp_path=products_path, device=device)
+                         early_stop=learning_hyperparams.early_stop, is_nni=is_nni, tmp_path=products_path,
+                         device=device)
     return runner
 
 
-def run_pygon(feature_matrices, adj_matrices, labels, hidden_layers,
-              graph_params, optimizer=optim.Adam, activation=torch.nn.functional.relu,
-              epochs=300, dropout=0.4, lr=0.005, l2_pen=0.0005, coeffs=None, unary="bce", iterations=3,
-              dumping_name='', edge_normalization="correct", early_stop=True, is_nni=False, device=1, check='CV',
-              purpose='checkout'):
+def run_pygon(feature_matrices, adj_matrices, labels, graph_params, learning_hyperparams, iterations=3,
+              dumping_name='', is_nni=False, device=1, check='CV', purpose='checkout'):
     """
     Implement PYGON model using the specified hyper-parameters and the input graphs.
     Here we use at least 20 graphs (an arbitrary choice). We either split the graphs into training (60%), eval (20%) and
@@ -365,9 +405,9 @@ def run_pygon(feature_matrices, adj_matrices, labels, hidden_layers,
     if check == 'split':
         for it in range(iterations):
             rand_test_indices = np.random.choice(len(labels), round(len(labels) * 0.4), replace=False)  # Test + Eval
-            rand_eval_indices = np.random.choice(rand_test_indices, round(len(rand_test_indices) * 0.5), replace=False)
             train_indices = np.delete(np.arange(len(labels)), rand_test_indices)
-            test_indices = np.delete(rand_test_indices, rand_eval_indices)
+            rand_eval_indices = rand_test_indices[:round(0.5 * len(rand_test_indices))]
+            test_indices = rand_test_indices[round(0.5 * len(rand_test_indices)):]
 
             training_features = [feature_matrices[j] for j in train_indices]
             training_adj = [adj_matrices[j] for j in train_indices]
@@ -381,14 +421,11 @@ def run_pygon(feature_matrices, adj_matrices, labels, hidden_layers,
             test_adj = [adj_matrices[j] for j in test_indices]
             test_labels = [labels[j] for j in test_indices]
 
-            activations = [activation] * (len(hidden_layers) + 1)
             runner = build_model(training_features, training_adj, training_labels,
                                  eval_features, eval_adj, eval_labels,
                                  test_features, test_adj, test_labels,
-                                 hidden_layers, activations, optimizer, epochs, dropout, lr,
-                                 l2_pen, coeffs, unary, class_weights, graph_params, dumping_name,
-                                 edge_normalization=edge_normalization, early_stop=early_stop, is_nni=is_nni,
-                                 device=device)
+                                 learning_hyperparams, class_weights, graph_params, dumping_name,
+                                 is_nni=is_nni, device=device)
             runners.append(runner)
     elif check == 'CV':
         # 5-Fold CV, one fold (4 graphs) for test graphs, one fold for eval and the rest are training.
@@ -413,14 +450,38 @@ def run_pygon(feature_matrices, adj_matrices, labels, hidden_layers,
             test_adj = [adj_matrices[j] for j in test_fold]
             test_labels = [labels[j] for j in test_fold]
 
-            activations = [activation] * (len(hidden_layers) + 1)
             runner = build_model(training_features, training_adj, training_labels,
                                  eval_features, eval_adj, eval_labels,
                                  test_features, test_adj, test_labels,
-                                 hidden_layers, activations, optimizer, epochs, dropout, lr,
-                                 l2_pen, coeffs, unary, class_weights, graph_params, dumping_name,
-                                 edge_normalization=edge_normalization, early_stop=early_stop, is_nni=is_nni,
-                                 device=device)
+                                 learning_hyperparams, class_weights, graph_params, dumping_name,
+                                 is_nni=is_nni, device=device)
+            runners.append(runner)
+    elif check == '2CV':
+        all_indices = np.arange(len(labels))
+        np.random.shuffle(all_indices)
+        folds = np.array_split(all_indices, 5)
+        for it in range(2):
+            test_fold = folds[it]
+            eval_fold = folds[(it + 1) % 5]
+            train_indices = np.hstack([folds[(it + 2 + j) % 5] for j in range(3)])
+
+            training_features = [feature_matrices[j] for j in train_indices]
+            training_adj = [adj_matrices[j] for j in train_indices]
+            training_labels = [labels[j] for j in train_indices]
+
+            eval_features = [feature_matrices[j] for j in eval_fold]
+            eval_adj = [adj_matrices[j] for j in eval_fold]
+            eval_labels = [labels[j] for j in eval_fold]
+
+            test_features = [feature_matrices[j] for j in test_fold]
+            test_adj = [adj_matrices[j] for j in test_fold]
+            test_labels = [labels[j] for j in test_fold]
+
+            runner = build_model(training_features, training_adj, training_labels,
+                                 eval_features, eval_adj, eval_labels,
+                                 test_features, test_adj, test_labels,
+                                 learning_hyperparams, class_weights, graph_params, dumping_name,
+                                 is_nni=is_nni, device=device)
             runners.append(runner)
     else:
         raise ValueError(f"Wrong value for 'check', {check}")
